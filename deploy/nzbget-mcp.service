@@ -1,0 +1,34 @@
+# Optional: always-on HTTP transport, bound to loopback only.
+# The MCP endpoint has NO authentication — never bind it to the LAN.
+# Reach it from your workstation with:  ssh -L 8000:127.0.0.1:8000 piracy
+#
+# Install:  sudo cp deploy/nzbget-mcp.service /etc/systemd/system/
+#           sudo systemctl enable --now nzbget-mcp
+[Unit]
+Description=NZBGet MCP server
+After=network-online.target nzbget.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nzbget
+Group=nzbget
+EnvironmentFile=/etc/nzbget-mcp.env
+Environment=MCP_TRANSPORT=http
+Environment=MCP_HOST=127.0.0.1
+Environment=MCP_PORT=8000
+ExecStart=/opt/nzbget-mcp/venv/bin/nzbget-mcp
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,94 @@
+name: nzbget-mcp
+
+# Self-contained stack: NZBGet plus the MCP server that drives it.
+#
+#   docker compose up -d
+#
+# Storage layout is deliberate. NZBGet's working directories (intermediate,
+# queue, tmp) live in a named volume so their heavy write traffic stays inside
+# Docker's VM, where it runs at native speed. Only ./completed is bind-mounted
+# back to the host, so finished downloads are reachable from Finder while
+# taking just one sequential write each.
+#
+# Both ports publish to 127.0.0.1 only. The MCP endpoint has no authentication,
+# so anything that can reach it can drive the downloader — keep it off the LAN.
+
+services:
+  # Applies .env news-server settings into NZBGet's config, then exits. Keeps
+  # .env the single source of truth: recreate the config volume and the
+  # provider is still configured.
+  nzbget-init:
+    image: ghcr.io/nzbgetcom/nzbget:latest
+    container_name: nzbget-init
+    restart: "no"
+    entrypoint: ["python3", "/init/nzbget-init.py"]
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - nzbget-config:/config
+      - nzbget-work:/downloads
+      - ./docker/nzbget-init.py:/init/nzbget-init.py:ro
+
+  nzbget:
+    image: ghcr.io/nzbgetcom/nzbget:latest
+    container_name: nzbget
+    restart: unless-stopped
+    depends_on:
+      nzbget-init:
+        condition: service_completed_successfully
+    # Present so that editing .env changes this service's hash and Compose
+    # recreates the container. NZBGet reads its config once at startup, so
+    # without this a .env edit would rewrite the file on disk while the running
+    # daemon carried on with the old settings.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NZBGET_USER: ${NZBGET_USERNAME:-nzbget}
+      NZBGET_PASS: ${NZBGET_PASSWORD:-tegbzn6789}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "127.0.0.1:${NZBGET_PORT:-6789}:6789"
+    volumes:
+      - nzbget-config:/config
+      - nzbget-work:/downloads
+      - ./completed:/downloads/completed
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "6789"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  mcp:
+    build: .
+    image: nzbget-mcp:latest
+    container_name: nzbget-mcp
+    restart: unless-stopped
+    depends_on:
+      nzbget:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8080}:8000"
+    # Passes INDEXER<N>_* through without having to enumerate them here.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NZBGET_URL: http://nzbget:6789
+      NZBGET_USERNAME: ${NZBGET_USERNAME:-nzbget}
+      NZBGET_PASSWORD: ${NZBGET_PASSWORD:-tegbzn6789}
+      NZBGET_TIMEOUT: ${NZBGET_TIMEOUT:-30}
+      NZBGET_READ_ONLY: ${NZBGET_READ_ONLY:-false}
+      NZBGET_ALLOW_SHUTDOWN: ${NZBGET_ALLOW_SHUTDOWN:-false}
+      MCP_TRANSPORT: http
+      MCP_PORT: 8000
+      MCP_PATH: ${MCP_PATH:-/mcp}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+volumes:
+  nzbget-config:
+  nzbget-work:
